@@ -1,0 +1,47 @@
+name: Gerar Audio Diario
+on:
+  schedule:
+    - cron: '0 8 * * *' # Roda todo dia às 05:00 (Brasília)
+  workflow_dispatch: # Permite rodar manualmente se quiser
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+      - run: npm install @google/genai
+      - name: Script de Geração
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          node -e "
+          const { GoogleGenAI } = require('@google/genai');
+          const fs = require('fs');
+          
+          async function run() {
+            const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+            const date = new Date().toISOString().split('T')[0];
+            
+            // Aqui você buscaria o texto do seu Gist (mesmo que o app usa)
+            const text = 'Texto do devocional de hoje...'; 
+
+            const response = await ai.models.generateContent({
+              model: 'gemini-2.5-flash-preview-tts',
+              contents: [{ parts: [{ text }] }],
+              config: { responseModalities: ['AUDIO'] }
+            });
+
+            const base64 = response.candidates[0].content.parts[0].inlineData.data;
+            if (!fs.existsSync('audios')) fs.mkdirSync('audios');
+            fs.writeFileSync(\`audios/\${date}.mp3\`, Buffer.from(base64, 'base64'));
+          }
+          run();
+          "
+      - name: Commit e Push
+        run: |
+          git config --global user.name 'Devocional Bot'
+          git config --global user.email 'bot@luzdiaria.com'
+          git add .
+          git commit -m "Audio do dia $(date +%F)"
+          git push
