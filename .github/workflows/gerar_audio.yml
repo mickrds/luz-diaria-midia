@@ -1,41 +1,105 @@
-- name: Generate Audio
+name: Gerador de Áudio Devocional
+
+on:
+  workflow_dispatch: # Permite rodar manualmente
+  schedule:
+    - cron: '0 3 * * *' # Roda todo dia às 00:00 (Horário de Brasília aprox.)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Permissão para gravar o áudio no repositório
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: npm install @google/genai
+
+      - name: Generate Audio
         env:
           API_KEY: ${{ secrets.API_KEY }}
         run: |
-          rm -rf audios # Remove se for arquivo, limpa se for pasta
-          mkdir -p audios # Cria a pasta limpa
+          # CORREÇÃO DO ERRO ENOTDIR: 
+          # Remove qualquer arquivo chamado 'audios' que não seja uma pasta
+          rm -rf audios 
+          
+          # Cria a pasta audios do zero
+          mkdir -p audios
+          
+          # Cria o script gerador
           cat << 'EOF' > generator.mjs
           import { GoogleGenAI } from '@google/genai';
           import fs from 'fs';
 
           async function start() {
+            if (!process.env.API_KEY) {
+              console.error('ERRO: API_KEY não configurada nos Secrets!');
+              process.exit(1);
+            }
+
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             const date = new Date().toISOString().split('T')[0];
             
-            const gistUrl = 'https://gist.githubusercontent.com/mickrds/b34732e31123be1e934e6bb0ffd0a0ef/raw/devocionais.json';
-            const response = await fetch(gistUrl);
-            const devocionais = await response.json();
-            const hoje = devocionais[date];
+            console.log(`Iniciando geração para a data: ${date}`);
 
-            if (!hoje) return;
+            try {
+              const gistUrl = 'https://gist.githubusercontent.com/mickrds/b34732e31123be1e934e6bb0ffd0a0ef/raw/devocionais.json';
+              const response = await fetch(gistUrl);
+              const devocionais = await response.json();
+              const hoje = devocionais[date];
 
-            const texto = `${hoje.title}. ${hoje.verseText}. ${hoje.content}`.replace(/\n/g, ' ');
-            
-            const result = await ai.models.generateContent({
-              model: 'gemini-2.5-flash-preview-tts',
-              contents: [{ parts: [{ text: texto }] }],
-              config: { 
-                responseModalities: ['AUDIO'],
-                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+              if (!hoje) {
+                console.log('Nenhum devocional encontrado para hoje no Gist.');
+                return;
               }
-            });
 
-            const audioPart = result.candidates[0].content.parts.find(p => p.inlineData);
-            if (audioPart) {
-              fs.writeFileSync(`audios/${date}.mp3`, Buffer.from(audioPart.inlineData.data, 'base64'));
-              console.log('Áudio salvo.');
+              // Limpa o texto para o TTS
+              const texto = `${hoje.title}. ${hoje.verseText}. ${hoje.content}`.replace(/\n/g, ' ');
+              
+              const result = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-preview-tts',
+                contents: [{ parts: [{ text: texto }] }],
+                config: { 
+                  responseModalities: ['AUDIO'],
+                  speechConfig: { 
+                    voiceConfig: { 
+                      prebuiltVoiceConfig: { voiceName: 'Kore' } 
+                    } 
+                  }
+                }
+              });
+
+              const audioPart = result.candidates[0].content.parts.find(p => p.inlineData);
+              if (audioPart) {
+                const buffer = Buffer.from(audioPart.inlineData.data, 'base64');
+                fs.writeFileSync(`audios/${date}.mp3`, buffer);
+                console.log(`✅ Sucesso! Áudio salvo em audios/${date}.mp3 (${buffer.length} bytes)`);
+              } else {
+                console.error('O modelo não retornou dados de áudio.');
+              }
+            } catch (err) {
+              console.error('Erro durante a execução:', err);
+              process.exit(1);
             }
           }
           start();
           EOF
+
+          # Executa o script
           node generator.mjs
+
+      - name: Commit and Push
+        run: |
+          git config --global user.name "Luz Diária Bot"
+          git config --global user.email "bot@luzdiaria.com"
+          git add audios/*.mp3
+          git commit -m "🎙️ Áudio gerado automaticamente: $(date +'%Y-%m-%d')" || echo "Nada para commitar"
+          git push
