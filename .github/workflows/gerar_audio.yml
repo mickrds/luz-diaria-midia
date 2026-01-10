@@ -2,19 +2,23 @@ name: Automação Devocional Áudio
 on:
   workflow_dispatch: 
   schedule:
-    - cron: '0 8 * * *' 
+    - cron: '0 8 * * *' # Roda todo dia às 08:00 UTC (05:00 BRT)
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      
+      - name: Configurar Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: 20 # Usando a versão mais estável
-      - name: Instalar Dependências
+          node-version: 20
+
+      - name: Instalar SDK do Gemini
         run: npm install @google/genai
-      - name: Gerar Script de Execução
+
+      - name: Criar Script de Geração (.mjs)
         run: |
           cat << 'EOF' > generator.mjs
           import { GoogleGenAI } from '@google/genai';
@@ -22,26 +26,30 @@ jobs:
 
           async function start() {
             try {
+              console.log('--- Iniciando Processo de Áudio ---');
               const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
               const date = new Date().toISOString().split('T')[0];
               
+              // 1. Busca os textos do seu Gist
               const gistUrl = 'https://gist.githubusercontent.com/mickrds/b34732e31123be1e934e6bb0ffd0a0ef/raw/devocionais.json';
               const responseGist = await fetch(gistUrl);
               const devocionais = await responseGist.json();
               const hoje = devocionais[date];
 
               if (!hoje) {
-                console.log('Nenhum devocional encontrado para a data: ' + date);
+                console.log('⚠️ Aviso: Nenhum devocional encontrado para a data ' + date);
                 return;
               }
 
-              // Texto puro para evitar que a IA tente "conversar" em texto
-              const textoParaLer = `${hoje.title}. ${hoje.verseText}. ${hoje.content}`;
+              // 2. Limpa o texto para o narrador (Gemini TTS)
+              // Importante: Passamos apenas o texto puro para evitar erro 400
+              const textoLimpo = `${hoje.title}. ${hoje.verseText}. ${hoje.content}`.replace(/\n/g, ' ');
 
-              console.log('Solicitando áudio ao Gemini...');
+              console.log('🎙️ Solicitando narração para: ' + hoje.title);
+
               const result = await ai.models.generateContent({
                 model: 'gemini-2.5-flash-preview-tts',
-                contents: [{ parts: [{ text: textoParaLer }] }],
+                contents: [{ parts: [{ text: textoLimpo }] }],
                 config: { 
                   responseModalities: ['AUDIO'],
                   speechConfig: { 
@@ -52,34 +60,38 @@ jobs:
                 }
               });
 
+              // 3. Extrai e salva o arquivo MP3
               const candidate = result.candidates[0];
               const audioPart = candidate.content.parts.find(p => p.inlineData);
               
               if (!audioPart) {
-                throw new Error('O modelo não retornou dados de áudio.');
+                throw new Error('Falha: O modelo não retornou os dados de áudio esperados.');
               }
 
               const base64Data = audioPart.inlineData.data;
               if (!fs.existsSync('audios')) fs.mkdirSync('audios');
               
-              const fileName = `audios/${date}.mp3`;
-              fs.writeFileSync(fileName, Buffer.from(base64Data, 'base64'));
-              console.log('✅ Sucesso! Arquivo criado: ' + fileName);
+              const path = `audios/${date}.mp3`;
+              fs.writeFileSync(path, Buffer.from(base64Data, 'base64'));
+              
+              console.log('✅ Sucesso: Arquivo salvo em ' + path);
             } catch (err) {
-              console.error('❌ ERRO NO PROCESSO:', err.message);
+              console.error('❌ ERRO CRÍTICO:', err.message);
               process.exit(1);
             }
           }
           start();
           EOF
-      - name: Executar Robô de Áudio
+
+      - name: Executar Gerador
         env:
           API_KEY: ${{ secrets.API_KEY }} 
         run: node generator.mjs
-      - name: Salvar Áudio no Repositório
+
+      - name: Commitar e Enviar ao Repositório
         run: |
           git config --global user.name 'Devocional Bot'
           git config --global user.email 'bot@luzdiaria.com'
           git add audios/*.mp3
-          git commit -m "Áudio gerado automaticamente $(date +%F)" || echo "Sem mudanças"
+          git commit -m "🎙️ Áudio gerado automaticamente: $(date +%F)" || echo "Nenhuma mudança para salvar"
           git push
