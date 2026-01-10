@@ -1,47 +1,81 @@
-name: Gerar Audio Diario
+name: Automação Devocional Áudio
 on:
+  workflow_dispatch: 
   schedule:
-    - cron: '0 8 * * *' # Roda todo dia às 05:00 (Brasília)
-  workflow_dispatch: # Permite rodar manualmente se quiser
+    - cron: '0 8 * * *' 
 
 jobs:
-  generate:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
-      - run: npm install @google/genai
-      - name: Script de Geração
+        with:
+          node-version: 18
+      - name: Instalar Dependências
+        run: npm install @google/genai
+      - name: Executar Robô de Áudio
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          API_KEY: ${{ secrets.API_KEY }} 
         run: |
           node -e "
           const { GoogleGenAI } = require('@google/genai');
           const fs = require('fs');
-          
-          async function run() {
-            const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-            const date = new Date().toISOString().split('T')[0];
-            
-            // Aqui você buscaria o texto do seu Gist (mesmo que o app usa)
-            const text = 'Texto do devocional de hoje...'; 
 
-            const response = await ai.models.generateContent({
-              model: 'gemini-2.5-flash-preview-tts',
-              contents: [{ parts: [{ text }] }],
-              config: { responseModalities: ['AUDIO'] }
-            });
+          async function start() {
+            try {
+              const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+              const date = new Date().toISOString().split('T')[0];
+              
+              const gistUrl = 'https://gist.githubusercontent.com/mickrds/b34732e31123be1e934e6bb0ffd0a0ef/raw/devocionais.json';
+              const responseGist = await fetch(gistUrl);
+              const devocionais = await responseGist.json();
+              const hoje = devocionais[date];
 
-            const base64 = response.candidates[0].content.parts[0].inlineData.data;
-            if (!fs.existsSync('audios')) fs.mkdirSync('audios');
-            fs.writeFileSync(\`audios/\${date}.mp3\`, Buffer.from(base64, 'base64'));
+              if (!hoje) {
+                console.log('Sem devocional para hoje.');
+                return;
+              }
+
+              // O SEGREDO: Passar apenas o texto puro, sem comandos extras que gerem texto.
+              const textoParaLer = hoje.title + '. ' + hoje.verseText + '. ' + hoje.content;
+
+              const result = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-preview-tts',
+                contents: [{ parts: [{ text: textoParaLer }] }],
+                config: { 
+                  responseModalities: ['AUDIO'],
+                  speechConfig: { 
+                    voiceConfig: { 
+                      prebuiltVoiceConfig: { voiceName: 'Kore' } 
+                    } 
+                  }
+                }
+              });
+
+              // Verifica se o modelo retornou áudio antes de tentar salvar
+              const candidate = result.candidates[0];
+              const audioPart = candidate.content.parts.find(p => p.inlineData);
+              
+              if (!audioPart) {
+                throw new Error('O modelo não gerou áudio. Resposta: ' + JSON.stringify(candidate));
+              }
+
+              const base64Data = audioPart.inlineData.data;
+              if (!fs.existsSync('audios')) fs.mkdirSync('audios');
+              fs.writeFileSync(\`audios/\${date}.mp3\`, Buffer.from(base64Data, 'base64'));
+              console.log('Áudio gerado com sucesso para ' + date);
+            } catch (err) {
+              console.error('ERRO FATAL:', err.message);
+              process.exit(1);
+            }
           }
-          run();
+          start();
           "
-      - name: Commit e Push
+      - name: Salvar Áudio no Repositório
         run: |
           git config --global user.name 'Devocional Bot'
           git config --global user.email 'bot@luzdiaria.com'
-          git add .
-          git commit -m "Audio do dia $(date +%F)"
+          git add audios/*.mp3
+          git commit -m "Áudio gerado automaticamente $(date +%F)" || echo "Sem mudanças"
           git push
