@@ -83,15 +83,14 @@ jobs:
           start();
           EOF
 
-      - name: Executar Gerador
-        env:
-          API_KEY: ${{ secrets.API_KEY }} 
-        run: node generator.mjs
-
-      - name: Commitar e Enviar ao Repositório
+     - name: Salvar Áudio no Repositório
         run: |
           git config --global user.name 'Devocional Bot'
           git config --global user.email 'bot@luzdiaria.com'
-          git add audios/*.mp3
+          # Criar pasta se não existir (evita erro de pathspec)
+          mkdir -p audios
+          # Adicionar a pasta inteira. O git só vai commitar se houver arquivos novos.
+          git add audios/
+          # O comando de commit com "|| true" evita que o workflow falhe se não houver mudanças
           git commit -m "🎙️ Áudio gerado automaticamente: $(date +%F)" || echo "Nenhuma mudança para salvar"
           git push
