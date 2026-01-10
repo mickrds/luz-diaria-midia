@@ -11,16 +11,14 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
         with:
-          node-version: 18
+          node-version: 20 # Usando a versão mais estável
       - name: Instalar Dependências
         run: npm install @google/genai
-      - name: Executar Robô de Áudio
-        env:
-          API_KEY: ${{ secrets.API_KEY }} 
+      - name: Gerar Script de Execução
         run: |
-          node -e "
-          const { GoogleGenAI } = require('@google/genai');
-          const fs = require('fs');
+          cat << 'EOF' > generator.mjs
+          import { GoogleGenAI } from '@google/genai';
+          import fs from 'fs';
 
           async function start() {
             try {
@@ -33,13 +31,14 @@ jobs:
               const hoje = devocionais[date];
 
               if (!hoje) {
-                console.log('Sem devocional para hoje.');
+                console.log('Nenhum devocional encontrado para a data: ' + date);
                 return;
               }
 
-              // O SEGREDO: Passar apenas o texto puro, sem comandos extras que gerem texto.
-              const textoParaLer = hoje.title + '. ' + hoje.verseText + '. ' + hoje.content;
+              // Texto puro para evitar que a IA tente "conversar" em texto
+              const textoParaLer = `${hoje.title}. ${hoje.verseText}. ${hoje.content}`;
 
+              console.log('Solicitando áudio ao Gemini...');
               const result = await ai.models.generateContent({
                 model: 'gemini-2.5-flash-preview-tts',
                 contents: [{ parts: [{ text: textoParaLer }] }],
@@ -53,25 +52,30 @@ jobs:
                 }
               });
 
-              // Verifica se o modelo retornou áudio antes de tentar salvar
               const candidate = result.candidates[0];
               const audioPart = candidate.content.parts.find(p => p.inlineData);
               
               if (!audioPart) {
-                throw new Error('O modelo não gerou áudio. Resposta: ' + JSON.stringify(candidate));
+                throw new Error('O modelo não retornou dados de áudio.');
               }
 
               const base64Data = audioPart.inlineData.data;
               if (!fs.existsSync('audios')) fs.mkdirSync('audios');
-              fs.writeFileSync(\`audios/\${date}.mp3\`, Buffer.from(base64Data, 'base64'));
-              console.log('Áudio gerado com sucesso para ' + date);
+              
+              const fileName = `audios/${date}.mp3`;
+              fs.writeFileSync(fileName, Buffer.from(base64Data, 'base64'));
+              console.log('✅ Sucesso! Arquivo criado: ' + fileName);
             } catch (err) {
-              console.error('ERRO FATAL:', err.message);
+              console.error('❌ ERRO NO PROCESSO:', err.message);
               process.exit(1);
             }
           }
           start();
-          "
+          EOF
+      - name: Executar Robô de Áudio
+        env:
+          API_KEY: ${{ secrets.API_KEY }} 
+        run: node generator.mjs
       - name: Salvar Áudio no Repositório
         run: |
           git config --global user.name 'Devocional Bot'
